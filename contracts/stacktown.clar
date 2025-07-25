@@ -164,3 +164,183 @@
   )
 )
 
+
+
+(define-private (validate-chars-group-5 (name (string-ascii 255)))
+  (and
+    (check-name-char name u52)
+    (check-name-char name u53)
+    (check-name-char name u54)
+    (check-name-char name u55)
+    (check-name-char name u56)
+    (check-name-char name u57)
+    (check-name-char name u58)
+    (check-name-char name u59)
+    (check-name-char name u60)
+    (check-name-char name u61)
+    (check-name-char name u62)
+    (check-name-char name u63)
+  )
+)
+
+
+
+
+(define-read-only (has-valid-name-chars (name (string-ascii 255)))
+  (let
+    ((name-len (len name)))
+    (and
+      ;; Check first 4 characters
+      (is-valid-character (unwrap-panic (element-at name u0)))
+      (is-valid-character (unwrap-panic (element-at name u1)))
+      (is-valid-character (unwrap-panic (element-at name u2)))
+      (is-valid-character (unwrap-panic (element-at name u3)))
+      ;; Check remaining characters in groups
+      (or
+        (<= name-len u4)
+        (and
+          (>= name-len u5)
+          (validate-chars-group-1 name)
+          (or
+            (<= name-len u16)
+            (and
+              (>= name-len u17)
+              (validate-chars-group-2 name)
+              (or
+                (<= name-len u28)
+                (and
+                  (>= name-len u29)
+                  (validate-chars-group-3 name)
+                  (or
+                    (<= name-len u40)
+                    (and
+                      (>= name-len u41)
+                      (validate-chars-group-4 name)
+                      (or
+                        (<= name-len u52)
+                        (and
+                          (>= name-len u53)
+                          (validate-chars-group-5 name)
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(define-read-only (is-valid-name (name (string-ascii 255)))
+  (let 
+    (
+      (name-len (len name))
+      (first-char (unwrap-panic (element-at name u0)))
+      (last-char (unwrap-panic (element-at name (- name-len u1))))
+    )
+    (and 
+      (>= name-len u3)  ;; Minimum 3 characters
+      (<= name-len u64) ;; Maximum 64 characters
+      (not (is-eq first-char "-"))  ;; Cannot start with hyphen
+      (not (is-eq last-char "-"))   ;; Cannot end with hyphen
+      (has-valid-name-chars name)
+    )
+  )
+)
+
+(define-read-only (get-name-info (name (string-ascii 255)))
+  (begin 
+    (asserts! (is-valid-name name) ERR-INVALID-NAME)
+    (ok (unwrap! (map-get? name-registry { name: name }) ERR-NAME-NOT-FOUND))
+  )
+)
+
+(define-public (register-name 
+  (name (string-ascii 255)) 
+  (period uint)
+)
+  (begin
+    ;; Validate name format first
+    (asserts! (is-valid-name name) ERR-INVALID-NAME)
+
+    ;; Check name availability 
+    (asserts! (is-none (map-get? name-registry { name: name })) ERR-NAME-UNAVAILABLE)
+
+    ;; Validate registration period
+    (asserts! 
+      (and 
+        (>= period (var-get min-validity-period))
+        (<= period (var-get max-validity-period))
+      ) 
+      ERR-INVALID-NAME
+    )
+
+    ;; Calculate total cost
+    (let 
+      (
+        (registration-cost 
+          (* (var-get base-fee) 
+             (/ period u31536000) ;; Pro-rate by year
+          )
+        )
+        (current-timestamp (current-time))
+      )
+
+      ;; Transfer registration fee
+      (try! (stx-transfer? registration-cost tx-sender (as-contract tx-sender)))
+
+      ;; Register name
+      (ok (map-set name-registry 
+        { name: name }
+        {
+          holder: tx-sender,
+          validity: (+ current-timestamp period),
+          listing-amount: u0
+        }
+      ))
+    )
+  )
+)
+
+(define-public (extend-validity 
+  (name (string-ascii 255))
+  (additional-period uint)
+)
+  (begin
+    ;; Validate name format first
+    (asserts! (is-valid-name name) ERR-INVALID-NAME)
+
+    ;; Get and verify name info
+    (let
+      (
+        (name-info (try! (get-name-info name)))
+        (current-holder (get holder name-info))
+        (current-validity (get validity name-info))
+        (extension-cost 
+          (* (var-get base-fee) 
+             (/ additional-period u31536000)
+          )
+        )
+        (current-timestamp (current-time))
+      )
+
+      ;; Validate caller is holder
+      (asserts! (is-eq current-holder tx-sender) ERR-UNAUTHORIZED)
+
+      ;; Transfer extension fee
+      (try! (stx-transfer? extension-cost tx-sender (as-contract tx-sender)))
+
+      ;; Update name validity
+      (ok (map-set name-registry 
+        { name: name }
+        (merge name-info {
+          validity: (+ current-timestamp additional-period)
+        })
+      ))
+    )
+  )
+)
